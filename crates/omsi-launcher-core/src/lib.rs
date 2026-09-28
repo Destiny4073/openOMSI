@@ -1433,12 +1433,14 @@ fn setting_key(k: &str) -> String {
     SETTING_ALIASES.iter().find(|(alias, _)| *alias == k).map(|(_, key)| key.to_string()).unwrap_or(k)
 }
 
-/// `ENG` / `DEU` / `FRA` from any spelling the game accepts (as its `describe::language_code`).
+/// `ENG` / `DEU` / `FRA` / `RUS` / `CHN` from any spelling the game accepts (as its
+/// `describe::language_code`).
 fn language_code(s: &str) -> &'static str {
     match s.trim().to_ascii_lowercase().as_str() {
         "de" | "deu" | "ger" | "german" | "deutsch" => "DEU",
         "fr" | "fra" | "fre" | "french" | "francais" | "français" => "FRA",
         "ru" | "rus" | "russian" | "русский" => "RUS",
+        "zh" | "cn" | "chn" | "zho" | "chinese" | "zhongwen" | "中文" | "简体中文" => "CHN",
         _ => "ENG",
     }
 }
