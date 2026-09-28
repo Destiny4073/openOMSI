@@ -1,5 +1,5 @@
 # Builds openOMSI for Windows, only when started by hand (the Actions tab's "Run
-# workflow"); publishes it as the release v<MAJOR.MINOR.COMMIT>; see docs/VERSIONING.md.
+# workflow"); the zip shows up under the run's Artifacts, nothing is published.
 name: Release
 
 on:
@@ -50,44 +50,3 @@ jobs:
         with:
           name: windows
           path: out/*.zip
-
-  release:
-    needs: [version, windows]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      VERSION: ${{ needs.version.outputs.version }}
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          path: out
-          merge-multiple: true
-      - name: Publish v${{ needs.version.outputs.version }}
-        run: |
-          ls -l out
-          cat > notes.md <<NOTES
-          **openOMSI $VERSION** - built from ${GITHUB_SHA::7}.
-
-          > **Early release, expect bugs.** openOMSI needs an original OMSI 2 installation to run; it contains no game content.
-
-          | Platform | Download |
-          | --- | --- |
-          | Windows x64 | \`openOMSI-$VERSION-windows-x64.zip\` |
-          NOTES
-          git tag -f "v$VERSION" "$GITHUB_SHA"
-          git push -f origin "v$VERSION"
-          if gh release view "v$VERSION" >/dev/null 2>&1; then
-            # the same version built again (main was rewritten and pushed once more): the
-            # release stays, with this build's files and notes
-            gh release upload "v$VERSION" out/*.zip --clobber
-            gh release edit "v$VERSION" --title "openOMSI $VERSION" --notes-file notes.md
-          else
-            gh release create "v$VERSION" out/*.zip \
-              --verify-tag \
-              --title "openOMSI $VERSION" \
-              --notes-file notes.md \
-              --generate-notes
-          fi
