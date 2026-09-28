@@ -24,6 +24,8 @@ struct Label {
 /// Texts rendered into textures, kept while they are used.
 pub struct TextCache {
     font: FontArc,
+    /// A system font with the CJK glyphs Roboto has not (see `omsi_ui::cjk_bytes`).
+    cjk: Option<FontArc>,
     labels: hashbrown::HashMap<(String, u32, [u8; 4]), Label>,
     frame: u64,
 }
@@ -31,7 +33,8 @@ pub struct TextCache {
 impl TextCache {
     pub fn new() -> Option<TextCache> {
         let font = FontArc::try_from_slice(ROBOTO).ok()?;
-        Some(TextCache { font, labels: hashbrown::HashMap::new(), frame: 0 })
+        let cjk = omsi_ui::cjk_bytes().and_then(|b| FontArc::try_from_vec_and_index(b.clone(), 0).ok());
+        Some(TextCache { font, cjk, labels: hashbrown::HashMap::new(), frame: 0 })
     }
 
     /// The texture of `text` at `px` pixels in `color` (alpha = opacity of the outline), and
@@ -44,7 +47,7 @@ impl TextCache {
             l.used = self.frame;
             return *l;
         }
-        let img = render_text(&self.font, text, px as f32, color);
+        let img = render_text(&self.font, self.cjk.as_ref(), text, px as f32, color);
         let tex = r.add_texture(scene, &img, false);
         let l = Label { tex, w: img.width, h: img.height, used: self.frame };
         self.labels.insert(key, l);
@@ -54,16 +57,21 @@ impl TextCache {
     /// Text width in pixels, without rendering it.
     pub fn width(&self, text: &str, px: f32) -> f32 {
         let text = &*omsi_ui::tr(text);
-        let f = self.font.as_scaled(PxScale::from(px));
+        let scale = PxScale::from(px);
         let mut w = 0.0;
-        let mut prev = None;
+        let mut prev: Option<(&FontArc, ab_glyph::GlyphId)> = None;
         for c in text.chars() {
+            let face = face_for(&self.font, self.cjk.as_ref(), c);
+            let f = face.as_scaled(scale);
             let id = f.glyph_id(c);
-            if let Some(p) = prev {
-                w += f.kern(p, id);
+            if let Some((pf, pid)) = prev {
+                // (kerning only makes sense within one face)
+                if std::ptr::eq(pf, face) {
+                    w += f.kern(pid, id);
+                }
             }
             w += f.h_advance(id);
-            prev = Some(id);
+            prev = Some((face, id));
         }
         w + outline_px(px) * 2.0 + 2.0
     }
@@ -87,31 +95,57 @@ fn outline_px(px: f32) -> f32 {
     (px / 9.0).clamp(1.0, 3.0)
 }
 
+/// The face that draws `c`: Roboto, or the CJK font for one it has not.
+fn face_for<'a>(font: &'a FontArc, cjk: Option<&'a FontArc>, c: char) -> &'a FontArc {
+    if font.glyph_id(c).0 == 0 {
+        if let Some(fb) = cjk {
+            if fb.glyph_id(c).0 != 0 {
+                return fb;
+            }
+        }
+    }
+    font
+}
+
 /// `text` as straight-alpha RGBA: the glyphs in `color` over a dark outline.
-fn render_text(font: &FontArc, text: &str, px: f32, color: [u8; 4]) -> omsi_texture::Image {
-    let f = font.as_scaled(PxScale::from(px));
+fn render_text(font: &FontArc, cjk: Option<&FontArc>, text: &str, px: f32, color: [u8; 4]) -> omsi_texture::Image {
+    let scale = PxScale::from(px);
+    let scaled = font.as_scaled(scale);
     let stroke = outline_px(px);
     let pad = stroke.ceil() as i32 + 1;
-    let asc = f.ascent();
-    let h = (asc - f.descent()).ceil() as i32 + pad * 2;
-    // lay the glyphs out
-    let mut glyphs = Vec::new();
-    let mut x = pad as f32;
-    let mut prev = None;
-    for c in text.chars() {
-        let id = f.glyph_id(c);
-        if let Some(p) = prev {
-            x += f.kern(p, id);
+    // when the line needs the CJK font, the canvas covers its taller extents too
+    let uses_cjk = cjk.is_some_and(|fb| text.chars().any(|c| scaled.glyph_id(c).0 == 0 && fb.glyph_id(c).0 != 0));
+    let (asc, desc) = match cjk.filter(|_| uses_cjk) {
+        Some(fb) => {
+            let s = fb.as_scaled(scale);
+            (scaled.ascent().max(s.ascent()), scaled.descent().min(s.descent()))
         }
-        glyphs.push(id.with_scale_and_position(PxScale::from(px), ab_glyph::point(x, pad as f32 + asc)));
+        None => (scaled.ascent(), scaled.descent()),
+    };
+    let h = (asc - desc).ceil() as i32 + pad * 2;
+    // lay the glyphs out
+    let mut glyphs: Vec<(&FontArc, ab_glyph::Glyph)> = Vec::new();
+    let mut x = pad as f32;
+    let mut prev: Option<(&FontArc, ab_glyph::GlyphId)> = None;
+    for c in text.chars() {
+        let face = face_for(font, cjk, c);
+        let f = face.as_scaled(scale);
+        let id = f.glyph_id(c);
+        if let Some((pf, pid)) = prev {
+            // (kerning only makes sense within one face)
+            if std::ptr::eq(pf, face) {
+                x += f.kern(pid, id);
+            }
+        }
+        glyphs.push((face, id.with_scale_and_position(scale, ab_glyph::point(x, pad as f32 + asc))));
         x += f.h_advance(id);
-        prev = Some(id);
+        prev = Some((face, id));
     }
     let w = (x.ceil() as i32 + pad).max(1);
     let (wu, hu) = (w as usize, h.max(1) as usize);
     let mut cov = vec![0f32; wu * hu];
-    for g in glyphs {
-        if let Some(o) = font.outline_glyph(g) {
+    for (face, g) in glyphs {
+        if let Some(o) = face.outline_glyph(g) {
             let b = o.px_bounds();
             o.draw(|gx, gy, c| {
                 let xx = b.min.x as i32 + gx as i32;
@@ -638,12 +672,23 @@ mod tests {
     #[test]
     fn text_renders_with_an_outline() {
         let f = FontArc::try_from_slice(ROBOTO).unwrap();
-        let img = render_text(&f, "Savva: hi", 16.0, [255, 255, 255, 220]);
+        let img = render_text(&f, None, "Savva: hi", 16.0, [255, 255, 255, 220]);
         assert!(img.width > 40 && img.height > 14);
         // white text and dark outline pixels are both there
         let px: Vec<&[u8]> = img.rgba.chunks(4).collect();
         assert!(px.iter().any(|p| p[3] > 200 && p[0] > 240));
         assert!(px.iter().any(|p| p[3] > 100 && p[0] < 40));
+    }
+
+    #[test]
+    fn cjk_text_renders_ink() {
+        let Some(bytes) = omsi_ui::cjk_bytes() else { return }; // no system CJK font here
+        let f = FontArc::try_from_slice(ROBOTO).unwrap();
+        let cjk = FontArc::try_from_vec_and_index(bytes.clone(), 0).unwrap();
+        let img = render_text(&f, Some(&cjk), "公交车", 16.0, [255, 255, 255, 220]);
+        // white pixels (a CJK glyph drew) and the dark outline around them
+        let px: Vec<&[u8]> = img.rgba.chunks(4).collect();
+        assert!(px.iter().any(|p| p[3] > 200 && p[0] > 240), "the CJK text drew nothing");
     }
 
     #[test]
