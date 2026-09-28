@@ -66,8 +66,8 @@ pub struct Settings {
     /// 0 = automatic (full size unless the window has more pixels than a 2560x1080 screen,
     /// as a Retina window does). The HUD is always drawn at full size.
     pub render_scale: f32,
-    /// Language of the texts the game shows about the cockpit: `ENG` (default), `DEU` or
-    /// `FRA` - OMSI's own language file codes.
+    /// Language of the texts the game shows about the cockpit: `ENG` (default), `DEU`,
+    /// `FRA`, `RUS` or `CHN` - OMSI's own language file codes where they exist.
     pub language: String,
     /// What passengers say: `all`, `tickets` (only what they ask for) or `off`.
     pub pax_voices: String,

@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 
 /// The trigger texts of one language, keys in lower case without the `KY_`.
 pub struct ControlNames {
-    /// `ENG`, `DEU` or `FRA`.
+    /// `ENG`, `DEU`, `FRA`, `RUS` or `CHN`.
     pub lang: String,
     texts: HashMap<String, String>,
 }
@@ -21,7 +21,8 @@ impl ControlNames {
     /// Read the key assignment texts of `lang` from the installation (and the mods' copies).
     pub fn load(root: &Path, lang: &str) -> ControlNames {
         let lang = match language_code(lang).as_str() {
-            "RUS" => "ENG".to_string(),
+            // (OMSI has no Russian or Chinese cockpit names; the English ones stand in)
+            "RUS" | "CHN" => "ENG".to_string(),
             l => l.to_string(),
         };
         let mut texts = HashMap::new();
@@ -115,13 +116,15 @@ impl ControlNames {
     }
 }
 
-/// `ENG` / `DEU` / `FRA` from the settings' spelling (default English).
+/// `ENG` / `DEU` / `FRA` / `RUS` / `CHN` from the settings' spelling (default English).
 pub fn language_code(s: &str) -> String {
     match s.trim().to_ascii_lowercase().as_str() {
         "de" | "deu" | "ger" | "german" | "deutsch" => "DEU".into(),
         "fr" | "fra" | "fre" | "french" | "francais" | "français" => "FRA".into(),
         // (the navigator and the interface speak Russian; OMSI has no Russian cockpit names)
         "ru" | "rus" | "russian" | "русский" => "RUS".into(),
+        // (the interface speaks Chinese; OMSI has no Chinese cockpit names either)
+        "zh" | "cn" | "chn" | "zho" | "chinese" | "zhongwen" | "中文" | "简体中文" => "CHN".into(),
         _ => "ENG".into(),
     }
 }
