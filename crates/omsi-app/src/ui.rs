@@ -6,7 +6,7 @@
 //! Every text is rendered once into a small texture and kept while it is shown; the
 //! overlays are rectangles in physical pixels (`Scene::overlays`).
 
-use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
+use ab_glyph::{Font, FontArc, FontVec, PxScale, ScaleFont};
 use omsi_render::{Renderer, Scene, TextureId};
 
 /// Roboto (Apache 2.0), the interface font.
@@ -33,7 +33,8 @@ pub struct TextCache {
 impl TextCache {
     pub fn new() -> Option<TextCache> {
         let font = FontArc::try_from_slice(ROBOTO).ok()?;
-        let cjk = omsi_ui::cjk_bytes().and_then(|b| FontArc::try_from_vec_and_index(b.clone(), 0).ok());
+        // (FontArc has no try_from_vec_and_index: parse the .ttc with FontVec, then share it)
+        let cjk = omsi_ui::cjk_bytes().and_then(|b| FontVec::try_from_vec_and_index(b.clone(), 0).ok().map(FontArc::new));
         Some(TextCache { font, cjk, labels: hashbrown::HashMap::new(), frame: 0 })
     }
 
@@ -684,7 +685,7 @@ mod tests {
     fn cjk_text_renders_ink() {
         let Some(bytes) = omsi_ui::cjk_bytes() else { return }; // no system CJK font here
         let f = FontArc::try_from_slice(ROBOTO).unwrap();
-        let cjk = FontArc::try_from_vec_and_index(bytes.clone(), 0).unwrap();
+        let cjk = FontVec::try_from_vec_and_index(bytes.clone(), 0).map(FontArc::new).unwrap();
         let img = render_text(&f, Some(&cjk), "公交车", 16.0, [255, 255, 255, 220]);
         // white pixels (a CJK glyph drew) and the dark outline around them
         let px: Vec<&[u8]> = img.rgba.chunks(4).collect();
