@@ -1,8 +1,50 @@
 //! Roboto, the interface font (Apache 2.0), in several weights of its variable font.
+//! What Roboto has not (the CJK scripts the interface speaks) comes from a system font.
 
 use ab_glyph::{Font, FontVec, PxScale, ScaleFont, VariableFont};
 
 const ROBOTO: &[u8] = include_bytes!("../../../assets/fonts/Roboto-VariableFont_wdth,wght.ttf");
+
+/// System fonts with CJK glyphs, tried in order (the first that opens wins). A box shows
+/// for a CJK character when none of them exists.
+const CJK_FONTS: &[&str] = &[
+    // Windows
+    "C:/Windows/Fonts/msyh.ttc",
+    "C:/Windows/Fonts/msyh.ttf",
+    "C:/Windows/Fonts/simhei.ttf",
+    "C:/Windows/Fonts/simsun.ttc",
+    // macOS
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/STHeiti Light.ttc",
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    // Linux (Debian, Fedora, Arch names)
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",
+    // Android
+    "/system/fonts/NotoSansCJK-Regular.ttc",
+    "/system/fonts/NotoSansSC-Regular.otf",
+];
+
+static CJK: std::sync::OnceLock<Option<Vec<u8>>> = std::sync::OnceLock::new();
+
+/// The bytes of the first system font with CJK glyphs, or none (shared with the game's own
+/// text renderer, which draws over the picture).
+pub fn cjk_bytes() -> Option<&'static Vec<u8>> {
+    CJK.get_or_init(|| {
+        for path in CJK_FONTS {
+            if let Ok(bytes) = std::fs::read(path) {
+                if FontVec::try_from_vec_and_index(bytes.clone(), 0).is_ok() {
+                    log::info!("interface: CJK glyphs from {path}");
+                    return Some(bytes);
+                }
+            }
+        }
+        log::info!("interface: no system font with CJK glyphs found");
+        None
+    })
+    .as_ref()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Weight {
@@ -99,6 +141,8 @@ pub const PAD: u32 = 1;
 
 pub struct Fonts {
     faces: Vec<(Weight, FontVec)>,
+    /// A system font with the CJK glyphs Roboto has not.
+    cjk: Option<FontVec>,
 }
 
 impl Default for Fonts {
@@ -119,11 +163,24 @@ impl Fonts {
                 Some((w, f))
             })
             .collect();
-        Fonts { faces }
+        Fonts { faces, cjk: cjk_bytes().and_then(|b| FontVec::try_from_vec_and_index(b.clone(), 0).ok()) }
     }
 
     fn face(&self, w: Weight) -> &FontVec {
         &self.faces.iter().find(|(k, _)| *k == w).unwrap_or(&self.faces[0]).1
+    }
+
+    /// The face that draws `c` at `w`: Roboto, or the CJK font for one it has not.
+    fn face_for(&self, w: Weight, c: char) -> &FontVec {
+        let f = self.face(w);
+        if f.glyph_id(c).0 == 0 {
+            if let Some(fb) = &self.cjk {
+                if fb.glyph_id(c).0 != 0 {
+                    return fb;
+                }
+            }
+        }
+        f
     }
 
     /// Width of `text` in pixels at `px`.
@@ -131,16 +188,21 @@ impl Fonts {
         let translated = crate::i18n::tr(text);
         let comp = composed(&translated);
         let text = &*comp;
-        let f = self.face(weight).as_scaled(PxScale::from(px));
+        let scale = PxScale::from(px);
         let mut w = 0.0;
-        let mut prev = None;
+        let mut prev: Option<(&FontVec, ab_glyph::GlyphId)> = None;
         for c in text.chars().map(substitute) {
+            let face = self.face_for(weight, c);
+            let f = face.as_scaled(scale);
             let id = f.glyph_id(c);
-            if let Some(p) = prev {
-                w += f.kern(p, id);
+            if let Some((pf, pid)) = prev {
+                // (kerning only makes sense within one face)
+                if std::ptr::eq(pf, face) {
+                    w += f.kern(pid, id);
+                }
             }
             w += f.h_advance(id);
-            prev = Some(id);
+            prev = Some((face, id));
         }
         w
     }
@@ -185,27 +247,44 @@ impl Fonts {
     pub fn render(&self, text: &str, px: f32, weight: Weight) -> Bitmap {
         let comp = composed(text);
         let text = &*comp;
-        let font = self.face(weight);
-        let f = font.as_scaled(PxScale::from(px));
-        let pad = PAD as f32;
-        let asc = f.ascent();
-        let h = ((asc - f.descent()).ceil() as u32 + 2 * PAD).max(1);
-        let mut glyphs = Vec::new();
-        let mut x = pad;
-        let mut prev = None;
-        for c in text.chars().map(substitute) {
-            let id = f.glyph_id(c);
-            if let Some(p) = prev {
-                x += f.kern(p, id);
+        let scale = PxScale::from(px);
+        let scaled = self.face(weight).as_scaled(scale);
+        let chars: Vec<char> = text.chars().map(substitute).collect();
+        // when the line needs the CJK font, the canvas covers its taller extents too
+        let uses_cjk = self
+            .cjk
+            .as_ref()
+            .is_some_and(|fb| chars.iter().any(|&c| scaled.glyph_id(c).0 == 0 && fb.glyph_id(c).0 != 0));
+        let (asc, desc) = match self.cjk.as_ref().filter(|_| uses_cjk) {
+            Some(fb) => {
+                let s = fb.as_scaled(scale);
+                (scaled.ascent().max(s.ascent()), scaled.descent().min(s.descent()))
             }
-            glyphs.push(id.with_scale_and_position(PxScale::from(px), ab_glyph::point(x, pad + asc)));
+            None => (scaled.ascent(), scaled.descent()),
+        };
+        let pad = PAD as f32;
+        let h = ((asc - desc).ceil() as u32 + 2 * PAD).max(1);
+        let mut glyphs: Vec<(&FontVec, ab_glyph::Glyph)> = Vec::new();
+        let mut x = pad;
+        let mut prev: Option<(&FontVec, ab_glyph::GlyphId)> = None;
+        for c in chars {
+            let face = self.face_for(weight, c);
+            let f = face.as_scaled(scale);
+            let id = f.glyph_id(c);
+            if let Some((pf, pid)) = prev {
+                // (kerning only makes sense within one face)
+                if std::ptr::eq(pf, face) {
+                    x += f.kern(pid, id);
+                }
+            }
+            glyphs.push((face, id.with_scale_and_position(scale, ab_glyph::point(x, pad + asc))));
             x += f.h_advance(id);
-            prev = Some(id);
+            prev = Some((face, id));
         }
         let w = (x.ceil() as u32 + PAD).max(1);
         let mut cov = vec![0f32; (w * h) as usize];
-        for g in glyphs {
-            if let Some(o) = font.outline_glyph(g) {
+        for (face, g) in glyphs {
+            if let Some(o) = face.outline_glyph(g) {
                 let b = o.px_bounds();
                 o.draw(|gx, gy, c| {
                     let xx = b.min.x as i32 + gx as i32;
@@ -248,5 +327,16 @@ mod glyph_tests {
         for c in "→★⚠✓▸ Bauernhof · 12 °C - ДёЖ".chars() {
             assert!(f.glyph_id(substitute(c)).0 != 0 || substitute(c) == ' ', "{c}");
         }
+    }
+
+    #[test]
+    fn cjk_text_renders_ink() {
+        let f = Fonts::new();
+        let b = f.render("公交车 简体中文", 20.0, Weight::Regular);
+        if f.cjk.is_none() {
+            return; // no system font with CJK glyphs on this machine
+        }
+        assert!(b.alpha.iter().any(|&a| a > 0), "the CJK line drew nothing");
+        assert!(f.width("公交车", 20.0, Weight::Regular) > 20.0, "CJK advances look wrong");
     }
 }

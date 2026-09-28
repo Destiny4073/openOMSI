@@ -20,4 +20,4 @@ pub use atlas::{Atlas, Sprite};
 pub use gpu::{Draw, Gpu, Layer};
 pub use i18n::tr;
 pub use paint::{Color, Painter, Rect, Vertex};
-pub use text::{Fonts, Weight};
+pub use text::{cjk_bytes, Fonts, Weight};
