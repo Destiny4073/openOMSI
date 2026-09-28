@@ -1,6 +1,6 @@
 # Builds openOMSI for Windows, only when started by hand (the Actions tab's "Run
 # workflow"); the zip shows up under the run's Artifacts, nothing is published.
-name: Release Windows
+name: Release
 
 on:
   workflow_dispatch:
