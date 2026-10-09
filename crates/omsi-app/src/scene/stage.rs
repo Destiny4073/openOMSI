@@ -1255,6 +1255,7 @@ mod tests {
     fn a_hole_outline_only_cuts_the_ground_it_lies_on() {
         let origin = DVec3::new(300.0, 600.0, 0.0);
         let ring = |z: f32| {
+            let z = z as f64;
             vec![
                 DVec3::new(origin.x + 10.0, origin.y + 10.0, z),
                 DVec3::new(origin.x + 10.0, origin.y + 30.0, z),
