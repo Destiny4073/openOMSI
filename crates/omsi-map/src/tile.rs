@@ -526,15 +526,27 @@ impl Tile {
                         _ => {}
                     }
                 }
+                // `[spline_terrain_align]` / `_2` belong to the `[spline]` record they follow:
+                // every one of Berlin-Spandau's does, and the 203 splines it names lie within
+                // 60 cm of the ground, the mark the editor's alignment leaves. GBA GuangfoMap
+                // writes all 16512 of its markers after a `[splineAttachement]`/repeater
+                // instead, where they name no spline - read as the tile's *last* one they
+                // flagged an elevated road, which cut its outline out of the ground and had the
+                // terrain walled up to its deck (tile_7_5.map). A `[rule]` between the spline
+                // and the marker does not end it.
                 "spline_terrain_align" => {
-                    if let Some(s) = t.splines.last_mut() {
-                        s.terrain_align_flag = true;
+                    if matches!(last, Last::Spline) {
+                        if let Some(s) = t.splines.last_mut() {
+                            s.terrain_align_flag = true;
+                        }
                     }
                 }
                 "spline_terrain_align_2" => {
                     let v = r.f64();
-                    if let Some(s) = t.splines.last_mut() {
-                        s.terrain_align = Some(v);
+                    if matches!(last, Last::Spline) {
+                        if let Some(s) = t.splines.last_mut() {
+                            s.terrain_align = Some(v);
+                        }
                     }
                 }
                 "rule" | "kill_rule" => {
@@ -734,6 +746,35 @@ Object Nr. 1\n[attachObj]\n0\nSceneryobjects\\plate.sco\n8\n7\n0\n3\n180\n0\n0\n
 [varparent]\n7\n\n\
 Object Nr. 2\n[splineAttachement]\n0\nSceneryobjects\\lamp.sco\n9\n1\n-6.5\n0.25\n4\n180\n0\n0\n30\n400\n1\n2\nA\nB\n\n\
 Object Nr. 3\n[splineAttachement_repeater]\n0\n12\n5\nSceneryobjects\\lamp.sco\n9\n0\n-6.5\n0.25\n4\n180\n0\n0\n30\n400\n0\n0\n";
+
+    /// The marker names the `[spline]` it follows, not whatever spline happens to be last in
+    /// the file. GBA GuangfoMap writes all 16512 of its markers after a `[splineAttachement]`;
+    /// read as the tile's last spline, one of them flagged an elevated road, which then cut
+    /// its outline out of the ground 35 m below it.
+    #[test]
+    fn spline_terrain_align_names_the_spline_it_follows() {
+        let spline = "[spline]\n0\nSplines\\road.sli\n100\n0\n101\n10\n0\n20\n0\n50\n0\n0\n0\n0\n0\n0\n0\n0\n";
+        let attach = "[splineAttachement]\n0\nSceneryobjects\\lamp.sco\n9\n1\n-6.5\n0.25\n4\n180\n0\n0\n30\n400\n1\n2\nA\nB\n";
+        let object = "[object]\n0\nSceneryobjects\\pole.sco\n7\n5\n6\n0.25\n90\n0\n0\n0\n";
+
+        // right after the spline it is that spline's, rules in between included
+        for between in ["", "[rule]\n1\nspeedlimit\n1.000\n0\n"] {
+            let t = tile(&format!("[version]\n14\n\n{spline}\n{between}[spline_terrain_align]\n[spline_terrain_align_2]\n3\n"));
+            assert!(t.splines[0].terrain_align_flag, "between {between:?}");
+            assert_eq!(t.splines[0].terrain_align, Some(3.0), "between {between:?}");
+        }
+
+        // after any other record no spline takes it
+        for tail in [attach, object] {
+            let t = tile(&format!("[version]\n14\n\n{spline}\n{tail}[spline_terrain_align]\n[spline_terrain_align_2]\n3\n"));
+            assert!(!t.splines[0].terrain_align_flag, "tail {tail:?}");
+            assert_eq!(t.splines[0].terrain_align, None, "tail {tail:?}");
+        }
+
+        // the tile as the map writes it: both splines, all the records, then the markers
+        let t = tile(&format!("{BASE}\n[spline_terrain_align]\n[spline_terrain_align_2]\n1\n"));
+        assert!(t.splines.iter().all(|s| !s.terrain_align_flag && s.terrain_align.is_none()));
+    }
 
     #[test]
     fn spline_h_fields() {

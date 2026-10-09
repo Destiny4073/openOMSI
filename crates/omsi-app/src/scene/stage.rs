@@ -718,6 +718,18 @@ impl World {
                             }
                             continue;
                         }
+                        // A road the ground was pulled onto lies on the ground, and its
+                        // outline cuts it. An outline standing clear of the ground all along
+                        // is a viaduct's: cutting it took the ground away under the bridge and
+                        // had the terrain walled up to its deck. A surface keeps its ground
+                        // the same way (`TileSurface::cuts`: "a bridge or an embankment keeps
+                        // its ground"); the outlines were the way around it.
+                        if hole_outline_stands_clear(&rim, &out.base_terrain, origin) {
+                            if debug_splines {
+                                log::info!("tile {tx},{ty} spline {} {}: its hole outline stands clear of the ground, no hole", s.id, s.file);
+                            }
+                            continue;
+                        }
                         out.hole_rims.push(rim);
                     }
                 }
@@ -1209,3 +1221,56 @@ impl World {
 /// OMSI_CHECK_SPLINES: every spline's two ends, its neighbours in the chain and its file.
 /// (Global: `offscreen` reads it to report chained ends that differ in height.)
 pub(crate) static SPLINE_ENDS: std::sync::LazyLock<Mutex<HashMap<i64, (DVec3, DVec3, i64, i64, String)>>> = std::sync::LazyLock::new(Default::default);
+
+/// How far a spline's hole outline may stand over the ground and still cut it (m). A road the
+/// editor pulled the ground onto lies within that; a viaduct's outline lies metres up, and
+/// cutting it out took the ground away under the bridge and walled the terrain up to the deck.
+/// (A hair above the ground is not enough to tell them apart: the automatic trough of a
+/// `[terrainholeprofile]` reaches 10 cm *below* the road, so a road on the ground measures
+/// negative here.)
+pub(super) const SPLINE_HOLE_CLEARANCE: f32 = 1.5;
+
+/// Does a spline's hole outline stand clear of the ground all along? `rim` is in the world
+/// metres of `origin`'s tile, whose ground is `terrain`; sampled as the drawn ground is.
+fn hole_outline_stands_clear(rim: &[DVec3], terrain: &Terrain, origin: DVec3) -> bool {
+    let side = tile_size() as f32;
+    !rim.is_empty()
+        && rim.iter().all(|v| {
+            let x = (v.x - origin.x) as f32;
+            let y = (v.y - origin.y) as f32;
+            v.z as f32 - terrain.sample(x.clamp(0.0, side), y.clamp(0.0, side)) > SPLINE_HOLE_CLEARANCE
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ground() -> Terrain {
+        Terrain::flat()
+    }
+
+    /// A road laid on the ground cuts it; a viaduct 35 m up does not.
+    #[test]
+    fn a_hole_outline_only_cuts_the_ground_it_lies_on() {
+        let origin = DVec3::new(300.0, 600.0, 0.0);
+        let ring = |z: f32| {
+            vec![
+                DVec3::new(origin.x + 10.0, origin.y + 10.0, z),
+                DVec3::new(origin.x + 10.0, origin.y + 30.0, z),
+                DVec3::new(origin.x + 20.0, origin.y + 30.0, z),
+                DVec3::new(origin.x + 20.0, origin.y + 10.0, z),
+            ]
+        };
+        // the automatic trough reaches below the road; that still cuts
+        assert!(!hole_outline_stands_clear(&ring(-0.1), &ground(), origin));
+        assert!(!hole_outline_stands_clear(&ring(0.0), &ground(), origin));
+        assert!(!hole_outline_stands_clear(&ring(SPLINE_HOLE_CLEARANCE), &ground(), origin));
+        // a bridge deck does not
+        assert!(hole_outline_stands_clear(&ring(28.5), &ground(), origin));
+        // one point on the ground is enough for the whole outline to cut
+        let mut on_ground = ring(28.5);
+        on_ground[2].z = 0.0;
+        assert!(!hole_outline_stands_clear(&on_ground, &ground(), origin));
+    }
+}
