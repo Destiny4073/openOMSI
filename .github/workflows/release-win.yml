@@ -1,0 +1,193 @@
+name: Release Win
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - id: v
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: echo "version=$(sh scripts/version.sh)${PR:+-pr$PR}" >> "$GITHUB_OUTPUT"
+
+      - run: echo "### openOMSI ${{ steps.v.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+
+    env:
+      OPENOMSI_VERSION: ${{ needs.version.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-pc-windows-msvc
+
+      - name: Workspace regression tests
+        run: cargo test --locked --workspace --no-fail-fast
+
+      - name: Build
+        shell: cmd
+        run: scripts\build-windows.cmd x86_64-pc-windows-msvc
+
+      - name: DirectX shader compiler
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download -R microsoft/DirectXShaderCompiler --pattern "dxc_*.zip" -D dxc
+          $zip = Get-ChildItem dxc/*.zip | Where-Object { $_.Name -notmatch "linux|pdb" } | Select-Object -First 1
+          Expand-Archive $zip.FullName -DestinationPath dxc/x
+          Copy-Item "dxc/x/bin/x64/dxcompiler.dll", "dxc/x/bin/x64/dxil.dll" dist/windows/
+          Get-ChildItem dist/windows
+
+      - name: Visual C++ runtime
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $crt = Get-ChildItem "$vs\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT" -Directory -ErrorAction SilentlyContinue | Sort-Object FullName | Select-Object -Last 1
+          $dir = if ($crt) { $crt.FullName } else { "$env:SystemRoot\System32" }
+
+          foreach ($dll in "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll") {
+            Copy-Item (Join-Path $dir $dll) dist/windows/
+          }
+
+          Get-ChildItem dist/windows
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "openOMSI-$env:OPENOMSI_VERSION-windows-x64"
+
+          New-Item -ItemType Directory -Force out | Out-Null
+
+          Copy-Item README.md, LICENSE dist/windows/
+
+          Compress-Archive `
+            -Path dist/windows/* `
+            -DestinationPath "out/$name.zip"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          retention-days: 14
+          name: windows-x64
+          path: out/*.zip
+
+  release:
+    if: github.event_name != 'pull_request'
+
+    needs:
+      - version
+      - windows
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Publish v${{ needs.version.outputs.version }}
+        run: |
+          ls -l out
+
+          awk -v v="## $VERSION" '
+            index($0, v) == 1 &&
+            (length($0) == length(v) ||
+             substr($0, length(v) + 1, 1) == " ")
+            {f = 1; next}
+            f && /^## / {exit}
+            f {print}
+          ' CHANGELOG.md > changes.md
+
+          if ! grep -q '[^[:space:]]' changes.md; then
+            prev=$(git tag -l 'v*' --sort=-v:refname | grep -vx "v$VERSION" | head -1)
+
+            if [ -n "$prev" ]; then
+              git diff --unified=0 "$prev" HEAD -- CHANGELOG.md |
+              grep '^+' |
+              grep -v '^+++' |
+              sed 's/^+//' |
+              grep -v '^## ' > changes.md || true
+            fi
+          fi
+
+          if ! grep -q '[^[:space:]]' changes.md; then
+            echo "Small changes and fixes." > changes.md
+          fi
+
+          cat > notes.md <<NOTES
+          **openOMSI $VERSION**
+
+          > **Early release, expect bugs.**
+          > openOMSI needs an original OMSI 2 installation to run; it contains no game content.
+
+          NOTES
+
+          cat changes.md >> notes.md
+
+          cat >> notes.md <<NOTES
+
+          ### Downloads
+
+          | Platform | Download |
+          | --- | --- |
+          | Windows x64 | \`openOMSI-$VERSION-windows-x64.zip\` |
+
+          NOTES
+
+          git tag -f "v$VERSION" "$GITHUB_SHA"
+          git push -f origin "v$VERSION"
+
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            gh release upload "v$VERSION" out/*.zip --clobber
+            gh release edit "v$VERSION" \
+              --title "openOMSI $VERSION" \
+              --notes-file notes.md
+          else
+            gh release create "v$VERSION" out/*.zip \
+              --verify-tag \
+              --title "openOMSI $VERSION" \
+              --notes-file notes.md
+          fi
