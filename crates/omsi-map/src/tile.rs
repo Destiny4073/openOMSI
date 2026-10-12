@@ -404,14 +404,21 @@ impl Tile {
                     }
                 }
                 "spline_terrain_align" => {
-                    if let Some(s) = t.splines.last_mut() {
-                        s.terrain_align_flag = true;
+                    // This flag belongs to the current record. OMSI also writes it
+                    // after objects and spline attachments; those must not turn the
+                    // last spline into a terrain cutter (e.g. a bridge above ground).
+                    if matches!(last, Last::Spline) {
+                        if let Some(s) = t.splines.last_mut() {
+                            s.terrain_align_flag = true;
+                        }
                     }
                 }
                 "spline_terrain_align_2" => {
                     let v = r.f64();
-                    if let Some(s) = t.splines.last_mut() {
-                        s.terrain_align = Some(v);
+                    if matches!(last, Last::Spline) {
+                        if let Some(s) = t.splines.last_mut() {
+                            s.terrain_align = Some(v);
+                        }
                     }
                 }
                 "rule" | "kill_rule" => {
@@ -746,6 +753,46 @@ Object Nr. 1\n[attachObj]\n0\nSceneryobjects\\plate.sco\n8\n7\n0\n3\n180\n0\n0\n
 [varparent]\n7\n\n\
 Object Nr. 2\n[splineAttachement]\n0\nSceneryobjects\\lamp.sco\n9\n1\n-6.5\n0.25\n4\n180\n0\n0\n30\n400\n1\n2\nA\nB\n\n\
 Object Nr. 3\n[splineAttachement_repeater]\n0\n12\n5\nSceneryobjects\\lamp.sco\n9\n0\n-6.5\n0.25\n4\n180\n0\n0\n30\n400\n0\n0\n";
+
+    #[test]
+    fn terrain_alignment_does_not_leak_from_object_records_into_the_last_spline() {
+        let prefix = BASE.split("Object Nr.").next().unwrap();
+        // Exercise objects, attached objects, spline attachments and repeaters,
+        // including a varparent modifier between the record and its terrain flag.
+        for record in BASE.split("Object Nr.").skip(1) {
+            for command in ["[spline_terrain_align]\n", "[spline_terrain_align_2]\n4\n"] {
+                let t = tile(&format!("{prefix}\n{record}\n{command}"));
+                assert_eq!(t.splines.len(), 2);
+                assert_eq!(
+                    t.objects.len() + t.attach_objects.len() + t.spline_attachments.len(),
+                    1,
+                );
+                assert!(
+                    t.splines.iter().all(|s| !s.terrain_align_flag && s.terrain_align.is_none()),
+                    "an object terrain flag must not create a hole under {}",
+                    t.splines[1].file,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn terrain_alignment_stays_on_its_spline_after_rules() {
+        for keyword in ["spline", "spline_h"] {
+            let height = if keyword == "spline_h" { "2\n" } else { "" };
+            let record = format!("[{keyword}]\n0\nroad.sli\n100\n0\n0\n10\n20\n30\n0\n50\n0\n0\n0\n{height}0\n0\n0\n0\n0\n\n");
+            let t = tile(&format!(
+                "[version]\n14\n{record}[rule]\n0\ntrafficdensity\n0.5\n0\n\n\
+                 [spline_terrain_align]\n[spline_terrain_align_2]\n3\n\n{record}"
+            ));
+            assert_eq!(t.splines.len(), 2);
+            assert!(t.splines[0].terrain_align_flag);
+            assert_eq!(t.splines[0].terrain_align, Some(3.0));
+            assert_eq!(t.splines[0].rules.len(), 1);
+            assert!(!t.splines[1].terrain_align_flag);
+            assert_eq!(t.splines[1].terrain_align, None);
+        }
+    }
 
     #[test]
     fn spline_h_fields() {
