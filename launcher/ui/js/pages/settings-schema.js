@@ -307,8 +307,7 @@ const sound = {
       title: 'Radio stations',
       rows: [
         { type: 'note', text: "A radio's station button n plays the n-th station, a cassette player the first; Shift+R steps through them. An address is an MP3, AAC or Ogg stream or an .m3u/.pls playlist." },
-        // (the launcher has no command for radio.cfg yet)
-        { type: 'note', text: 'The stations cannot be edited here yet.' },
+        { type: 'custom', id: 'radio' },
       ],
     },
   ],
@@ -323,7 +322,7 @@ const gameplay = {
       rows: [
         { type: 'select', key: 'boarding', label: 'Boarding', options: [['auto', 'Pay and take the ticket'], ['pay', 'The driver sells the ticket'], ['walk', 'Just walk in']] },
         { type: 'select', key: 'standing_chance', label: 'Standing passengers', options: [['0', 'Never'], ['5', '5%'], ['10', '10%'], ['25', '25%'], ['50', '50%'], ['100', 'Always']] },
-        { type: 'select', key: 'passenger_animation', label: 'Passenger animations', options: [['original', 'Original OMSI'], ['enhanced', 'Procedural (experimental)']] },
+        { type: 'select', key: 'passenger_animation', label: 'Passenger animations', options: [['enhanced', 'Natural (procedural)'], ['original', 'Original OMSI']] },
         { type: 'toggle', key: 'exact_fare', label: 'Passengers pay the exact fare' },
         { type: 'slider', key: 'pax_density', label: 'How many passengers', min: 0, max: 2, step: 0.1, def: 1, format: pct, store: r2 },
         { type: 'toggle', key: 'get_up', label: 'Ability to get up (Ctrl+Shift+G)' },
@@ -383,6 +382,7 @@ const general = {
         // (on top of the interface's size; Ctrl + the wheel over it in the game)
         { type: 'slider', key: 'chat_size', label: 'Chat size', min: 0.5, max: 3, step: 0.1, def: 1, format: pct, store: r1 },
         { type: 'toggle', key: 'name_tags', label: "Other players' names above their buses" },
+        { type: 'select', key: 'photo_mode', label: 'Photo mode', options: [['simple', 'Simple'], ['advanced', 'Advanced (for photographers)']], help: 'Simple: the lens, the look and the frame. Advanced: a camera body - sensor size, P/A/S/M exposure with ISO and metering, white balance in kelvin, tilt-shift, histogram, focus peaking, bracketing and 16-bit PNG.' },
         { type: 'section', title: 'Navigator' },
         { type: 'toggle', key: 'navigator', label: 'Navigator (Shift+N: map, schedule, off)' },
         { type: 'toggle', key: 'nav_arrows', label: 'Route arrows (as in OMSI 2)' },

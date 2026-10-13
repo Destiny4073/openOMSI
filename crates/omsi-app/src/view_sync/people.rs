@@ -18,7 +18,8 @@ use glam::{DVec3, Mat4, Vec3};
 use hashbrown::HashMap;
 use omsi_render::{AlphaMode, MaterialId, MeshId, Renderer, Scene};
 use omsi_sim::human::{skin, HumanType};
-use omsi_sim::people::{BodyOp, Place};
+use omsi_sim::people::cabin::DrawnBus;
+use omsi_sim::people::{BodyOp, BusId, Place};
 use omsi_sim::view_events::{PeopleFrame, PersonFrame};
 use omsi_sim::VehicleInstance;
 use std::path::{Path, PathBuf};
@@ -237,7 +238,9 @@ impl PeopleView {
                         2 => AlphaMode::Blend,
                         _ => AlphaMode::Opaque,
                     };
-                    mats.push(renderer.add_material(scene, tex, alpha, [1.0; 4], false));
+                    // (a body: its cut-out hair and clothes are not leaves, see `MaterialExtra::solid`)
+                    let extra = omsi_render::MaterialExtra { solid: true, ..Default::default() };
+                    mats.push(renderer.add_material_extra(scene, tex, alpha, [1.0; 4], false, None, None, None, None, [0.0; 3], extra));
                 }
                 self.gpu_materials.insert(key, mats);
             }
@@ -284,7 +287,7 @@ impl Humans {
         }
     }
 
-    pub(super) fn sync_money(&mut self, view: &mut PeopleView, world: &World, renderer: &Renderer, scene: &mut Scene, bus: &VehicleInstance) {
+    pub(crate) fn sync_money(&mut self, view: &mut PeopleView, world: &World, renderer: &Renderer, scene: &mut Scene, bus: &VehicleInstance) {
         if let Some(m) = self.sim.money.as_mut() {
             crate::money::sync(m, renderer, scene, bus);
         }
@@ -307,6 +310,35 @@ impl Humans {
         self.catch_up_bodies(view, renderer, scene);
         self.sim.snapshot_into(&mut view.frame);
         view.pose(world, renderer, scene, camera);
+    }
+}
+
+impl PeopleView {
+    pub(crate) fn follow_buses<'a>(&self, vehicle_of: impl Fn(BusId) -> Option<&'a VehicleInstance>, avatar: Option<u32>, renderer: &Renderer, scene: &mut Scene) -> Option<DVec3> {
+        let mut drawn: HashMap<BusId, Option<(usize, DrawnBus)>> = HashMap::new();
+        let mut moved = None;
+        for p in &self.frame.people {
+            let Place::Bus(b, l) = p.place else { continue };
+            let found = drawn.entry(b).or_insert_with(|| {
+                let k = self.frame.buses.iter().position(|x| x.id == b)?;
+                vehicle_of(b).map(|v| (k, DrawnBus::of(v, &self.frame.buses[k].cabin)))
+            });
+            let Some((k, d)) = found.as_ref() else { continue };
+            // (where they are drawn: with what is left of a glide onto their seat, see
+            // `animation::bones`)
+            let st = self.people.get(&p.id);
+            let (glide, glide_world) = st.map(|s| (s.glide, s.glide_world)).unwrap_or_default();
+            let (at, heading, tilt) = self.frame.buses[*k].follow(d, l + glide, p.position + glide_world, p.heading, p.tilt);
+            if avatar == Some(p.id) {
+                moved = Some(at - p.position - glide_world);
+            }
+            let Some(st) = st else { continue };
+            let xf = tilt * Mat4::from_rotation_z((-heading).to_radians() as f32);
+            for (_, inst) in &st.meshes {
+                renderer.set_transform(scene, *inst, at, xf);
+            }
+        }
+        moved
     }
 }
 
@@ -335,6 +367,13 @@ pub(crate) struct PersonView {
     pub(super) ankles: [Vec3; 2],
     /// The earlier IK/foot-planted animation, allocated only for the enhanced poses.
     pub(super) procedural: Option<omsi_sim::human::Pose>,
+    /// A jump of the person's place within a bus (onto the seat, as Omsi.exe puts them
+    /// there) drawn as a glide instead: what is left of it in the bus's frame, the same in
+    /// the world for the drawing, and the place last frame (the bus, where).
+    pub(super) glide: glam::Vec3,
+    pub(super) glide_world: DVec3,
+    pub(super) last_place: Option<(u64, DVec3)>,
+    pub(super) last_world: DVec3,
 }
 
 impl PeopleView {
@@ -448,14 +487,14 @@ impl PeopleView {
                 }
                 st.skinned = true;
                 st.since_posed = 0;
-                st.posed_at = (p.position, p.heading);
+                st.posed_at = (p.position + st.glide_world, p.heading);
             }
             // riders go with their bus; on the ground a mesh not posed this frame goes on
             // with the body too (left where it was posed, a far walker moved in jerks -
             // its feet slide a few centimetres instead, which nobody sees at that distance)
             let (at, heading) = match p.place {
                 Place::Ground if go => st.posed_at,
-                _ => (p.position, p.heading),
+                _ => (p.position + st.glide_world, p.heading),
             };
             // (riders with the tilt of their floor)
             let tilt = if matches!(p.place, Place::Bus(..)) { p.tilt } else { Mat4::IDENTITY };

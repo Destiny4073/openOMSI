@@ -238,6 +238,7 @@ pub(super) fn options_pages(app: &App) -> Vec<Page> {
         .collect();
     let interface: Vec<(String, String)> = vec![
         pick("language", "Language", "The language of the game's interface"),
+        pick("units", "Units", "Speeds, distances and temperatures in the game's own texts"),
         switch_row(app, "machine_translation", "Translate the remaining texts automatically (offline, downloads 620 MB once)", "Translates texts nobody has translated, on this machine"),
         slider_row(app, "ui_scale", "Game interface size", "The size of the texts, the menu, the timetable and the navigator", &pct),
         switch_row(app, "ui_scale_window", "Interface grows with the window", "On a window taller than 1080p the interface grows with it"),
@@ -356,6 +357,22 @@ pub(super) fn world_pages(app: &App) -> Vec<Page> {
             }
             for (name, hm, secs) in [("Morning", "06:00", 6 * 3600), ("Noon", "12:00", 12 * 3600), ("Evening", "18:00", 18 * 3600), ("Night", "23:00", 23 * 3600)] {
                 time.push(button(name, hm, "Jump to this time of day.", &format!("clock_set {secs}")));
+            }
+            // the date: by a day, a week or a month, the time of day kept (the timetable's
+            // day, the season and the map's chrono changes follow it as at midnight)
+            let (d, m) = app.clock.day_month();
+            let day = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][app.clock.weekday().rem_euclid(7) as usize];
+            let date = format!("{:04}-{m:02}-{d:02}  {}", app.clock.year, omsi_ui::tr(day));
+            time.push((row("Date", 'i', &date, "The day the timetable, the season and the map's changes follow", None), "noop".to_string()));
+            for (name, text, secs) in [
+                ("Date -1 month", "-1 month", app.clock.months_away(-1)),
+                ("Date -1 week", "-1 week", -7.0 * 86400.0),
+                ("Date -1 day", "-1 day", -86400.0),
+                ("Date +1 day", "+1 day", 86400.0),
+                ("Date +1 week", "+1 week", 7.0 * 86400.0),
+                ("Date +1 month", "+1 month", app.clock.months_away(1)),
+            ] {
+                time.push(button(name, text, "Move the date.", &format!("clock_shift {secs}")));
             }
             if let (Some(_), Some(p)) = (app.session.duty.as_ref(), app.player.as_ref()) {
                 let d = p.vehicle.host.tt_delay as f64;

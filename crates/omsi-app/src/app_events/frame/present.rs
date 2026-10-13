@@ -5,7 +5,7 @@ use super::*;
 
 crate::app::stage_ctx!(
     /// The lighting stage's part of the game.
-    LightingCx { reads: [net, player, world, clock], writes: [weather] }
+    LightingCx { reads: [net, world, clock], writes: [weather, player] }
 );
 
 /// The lighting the frame is drawn with.
@@ -114,7 +114,7 @@ impl App {
         // so it does not depend on a frame being acquired)
         let (path, include_touch) = shot;
         // the photo mode: its developed photo (stretched to the window) under its panel
-        let developed = self.photo.as_ref().filter(|ph| ph.render.showing_photo()).and_then(|ph| ph.developed()).map(|(w, h, px)| crate::photo::stretch(w, h, px, s.config.width, s.config.height));
+        let developed = self.photo.as_ref().filter(|ph| ph.render.showing_photo()).and_then(|ph| ph.shown()).map(|(w, h, px)| crate::photo::stretch(w, h, px, s.config.width, s.config.height));
         match developed.map(Ok).unwrap_or_else(|| r.render_to_image(
             scene,
             s.config.width,

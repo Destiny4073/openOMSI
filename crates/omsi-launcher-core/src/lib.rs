@@ -1162,6 +1162,8 @@ pub struct WeatherInfo {
 pub use omsi_content::weather_choice::metar_airports;
 mod airports;
 pub use airports::nearest_airport;
+mod custom_weather;
+pub use custom_weather::{custom_weather, CustomWeather};
 
 pub fn list_weather() -> Result<Vec<WeatherInfo>> {
     root()?;
@@ -1831,33 +1833,24 @@ pub fn delete_profile(name: &str) -> Result<()> {
 mod profile_cleanup_tests;
 
 // ---------------------------------------------------------------------------------------
-// key bindings: the content folder's Inputs/keyboard.cfg once the page has saved one (the
-// game reads that first), else the original installation's, which is never written
+// key bindings: the newer of ~/.openomsi/Inputs/keyboard.cfg and the content folder's once
+// the page has saved one (the game reads that first), else the original installation's,
+// which is never written
+
+pub fn adopt_own_inputs() {
+    let game = load_config_raw().game;
+    omsi_cfg::adopt_own_inputs(Some(Path::new(game.trim())).filter(|p| !p.as_os_str().is_empty()));
+}
 
 fn keyboard_cfg_write_path() -> Result<PathBuf> {
-    let cand = content_dir().unwrap_or(root()?).join("Inputs").join("keyboard.cfg");
-    if let Some(p) = cand.parent() {
-        if (p.exists() || std::fs::create_dir_all(p).is_ok()) && omsi_cfg::is_writable(p) {
-            return Ok(cand);
-        }
-    }
-    let fallback = data_dir().join("Inputs").join("keyboard.cfg");
-    if let Some(p) = fallback.parent() {
-        let _ = std::fs::create_dir_all(p);
-    }
-    Ok(fallback)
+    omsi_cfg::own_input("keyboard.cfg").ok_or_else(|| anyhow!("no home folder to keep the key bindings in"))
 }
 
 fn keyboard_cfg_read_path() -> Result<PathBuf> {
-    let own = keyboard_cfg_write_path()?;
-    if own.exists() {
-        return Ok(own);
+    match omsi_cfg::input_in_use("keyboard.cfg") {
+        Some(p) => Ok(p),
+        None => Ok(omsi_cfg::original_keyboard_cfg(&root()?)),
     }
-    let fallback = data_dir().join("Inputs").join("keyboard.cfg");
-    if fallback.exists() {
-        return Ok(fallback);
-    }
-    Ok(omsi_cfg::original_keyboard_cfg(&root()?))
 }
 
 fn binding_to_json(b: &omsi_content::input::KeyBinding) -> Value {
@@ -2070,7 +2063,9 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
     v["info_bar"] = json!(false);
     v["perf_overlay"] = json!("off");
     // Human posing; the original OMSI behavior remains the default.
-    v["passenger_animation"] = json!("original");
+    v["passenger_animation"] = json!("enhanced");
+    v["photo_mode"] = json!("simple");
+    v["units"] = json!("metric");
     // the trees' foliage bends and sways in the weather's wind
     v["windy_trees"] = json!(true);
     v["mirror_hud_every_frame"] = json!(false);
@@ -2145,7 +2140,9 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
             "ai_max_humans" => v[&k] = json!(val.parse::<f64>().map(|x| x.max(1.0) as i64).unwrap_or(200)),
             "drive_keys" | "navigator_corner" | "boarding" | "render_scale" | "pax_voices" => v[&k] = json!(val),
             "touch_door_mode" => v[&k] = json!(if val.eq_ignore_ascii_case("direct") { "direct" } else { "standard" }),
+            "photo_mode" => v[&k] = json!(if val.eq_ignore_ascii_case("advanced") { "advanced" } else { "simple" }),
             "passenger_animation" => v[&k] = json!(if val.eq_ignore_ascii_case("enhanced") { "enhanced" } else { "original" }),
+            "units" => v[&k] = json!(units_setting(val)),
             "ctrl_off" => v[&k] = json!(val),
             "metar_station" => v[&k] = json!(val.chars().filter(|c| c.is_ascii_alphabetic()).take(4).collect::<String>().to_ascii_uppercase()),
             "discord_app_id" => v[&k] = json!(val),
@@ -2224,6 +2221,11 @@ pub fn settings_from_text(text: Option<&str>) -> Value {
     // (passengers then waited at the cash desk for the driver): the game reads that as auto
     if version < 2 && v["boarding"] == "pay" {
         v["boarding"] = json!("auto");
+    }
+    // before version 3 `passenger_animation=original` was everybody's default, not a choice:
+    // the people's own (procedural) poses are the default now
+    if version < 3 && v["passenger_animation"] == "original" {
+        v["passenger_animation"] = json!("enhanced");
     }
     v
 }
@@ -2405,13 +2407,22 @@ pub fn apply_graphics_profile(profile: &Value, settings: &mut Value) {
 
 /// The `settings.cfg` text for the page's values `v`; the lines of the `old` file that the
 /// page does not manage (keys of newer games, hand-written switches) are kept.
+/// The `units` setting's value: `metric`, `uk` or `us` (the game's `units` module).
+fn units_setting(v: &str) -> &'static str {
+    match v.trim().to_ascii_lowercase().as_str() {
+        "uk" | "british" => "uk",
+        "us" | "american" | "imperial" => "us",
+        _ => "metric",
+    }
+}
+
 pub fn settings_to_text(v: &Value, old: Option<&str>) -> String {
     let b = |k: &str, d: bool| v.get(k).and_then(|x| x.as_bool()).unwrap_or(d) as u8;
     // a number, also as the string a select gives
     let n = |k: &str, d: i64| v.get(k).and_then(|x| x.as_i64().or_else(|| x.as_f64().or_else(|| x.as_str().and_then(|s| s.trim().parse::<f64>().ok())).map(|f| f as i64))).unwrap_or(d);
     let f = |k: &str, d: f64| v.get(k).and_then(|x| x.as_f64()).unwrap_or(d);
     let text = format!(
-        "# openOMSI settings (written by the launcher)\nversion=2\nmsaa={}\nanisotropy={}\nssao={}\nshadows={}\nshadow_size={}\nnavigator={}\nui_opacity={}\nnavigator_corner={}\nboarding={}\ndetail_textures={}\nexact_fare={}\nenhanced={}\ngraphics={}\nfullscreen={}\nvsync={}\nvolume={}\ndrive_keys={}\nrender_scale={}\nview_distance={}\nlanguage={}\ntexture_memory={}\ntexture_compression={}\nchat={}\ntooltips={}\nname_tags={}\nshow_fps={}\nclouds={}\npax_density={}\nvol_ai={}\nvol_scenery={}\nmirror_size={}\ndoppler={}\ndriver={}\nmax_fps={}\nmin_obj_size={}\nmax_obj_dist={}\n",
+        "# openOMSI settings (written by the launcher)\nversion=3\nmsaa={}\nanisotropy={}\nssao={}\nshadows={}\nshadow_size={}\nnavigator={}\nui_opacity={}\nnavigator_corner={}\nboarding={}\ndetail_textures={}\nexact_fare={}\nenhanced={}\ngraphics={}\nfullscreen={}\nvsync={}\nvolume={}\ndrive_keys={}\nrender_scale={}\nview_distance={}\nlanguage={}\ntexture_memory={}\ntexture_compression={}\nchat={}\ntooltips={}\nname_tags={}\nshow_fps={}\nclouds={}\npax_density={}\nvol_ai={}\nvol_scenery={}\nmirror_size={}\ndoppler={}\ndriver={}\nmax_fps={}\nmin_obj_size={}\nmax_obj_dist={}\n",
         n("msaa", 4),
         n("anisotropy", 8),
         b("ssao", true),
@@ -2600,7 +2611,9 @@ pub fn settings_to_text(v: &Value, old: Option<&str>) -> String {
     text.push_str(&format!("radio_speaker={}\nradio_hiss={}\nradio_dropouts={}\n", f("radio_speaker", 0.0).clamp(0.0, 1.0), f("radio_hiss", 0.0).clamp(0.0, 1.0), f("radio_dropouts", 0.0).clamp(0.0, 1.0)));
     text.push_str(&format!("ai_wait_timed_stops_only={}\n", b("ai_wait_timed_stops_only", false)));
     text.push_str(&format!("triple_left_angle_deg={}\ntriple_right_angle_deg={}\ntriple_eye_height_mm={}\n", f("triple_left_angle_deg", 45.0).clamp(0.0, 90.0), f("triple_right_angle_deg", 45.0).clamp(0.0, 90.0), f("triple_eye_height_mm", 0.0).clamp(-500.0, 500.0)));
+    text.push_str(&format!("photo_mode={}\n", if v.get("photo_mode").and_then(|x| x.as_str()) == Some("advanced") { "advanced" } else { "simple" }));
     text.push_str(&format!("passenger_animation={}\n", if v.get("passenger_animation").and_then(|x| x.as_str()) == Some("enhanced") { "enhanced" } else { "original" }));
+    text.push_str(&format!("units={}\n", units_setting(v.get("units").and_then(|x| x.as_str()).unwrap_or("metric"))));
     let written: Vec<String> = text.lines().filter_map(|l| l.split_once('=')).map(|(k, _)| k.trim().to_ascii_lowercase()).collect();
     for line in old.unwrap_or("").lines() {
         let t = line.trim();
