@@ -295,8 +295,14 @@ impl App {
         // the game menu: Escape opens it (and pauses, except in a LAN session, which
         // goes on for the others), and while it is open the keys are its own
         if self.menus.game_menu.is_some() {
-            if pressed && !repeat {
-                self.menu_key(event_loop, code);
+            if pressed {
+                if !repeat {
+                    self.menu_key(event_loop, code);
+                }
+            } else if self.menus.key_capture.is_some() {
+                // (while the key list waits for one, a modifier let go of on its own is the
+                // key: its press alone could not be told from a chord, see `menu_key_release`)
+                self.menu_key_release(code);
             }
             return true;
         }

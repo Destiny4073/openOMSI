@@ -527,6 +527,12 @@ impl ApplicationHandler for Launcher {
                     }
                 }
                 if event.state != ElementState::Pressed {
+                    // A modifier let go of on its own is a key of its own (OMSI's
+                    // `keyboard.cfg` gives the right Ctrl the scan code 157): the controls
+                    // page can bind it, which its press alone could not tell from a chord.
+                    if let PhysicalKey::Code(code) = event.physical_key {
+                        self.ui.input.release_key(code, self.modifiers.chord());
+                    }
                     return;
                 }
                 let cmd = self.modifiers.command();
@@ -540,7 +546,7 @@ impl ApplicationHandler for Launcher {
                     return;
                 }
                 if let PhysicalKey::Code(code) = event.physical_key {
-                    self.ui.input.capture_key(code);
+                    self.ui.input.capture_key(code, self.modifiers.chord());
                     let k = match code {
                         KeyCode::ArrowLeft => Some(Key::Left),
                         KeyCode::ArrowRight => Some(Key::Right),

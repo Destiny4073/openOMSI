@@ -101,7 +101,10 @@ pub fn controls(l: &mut Launcher, area: Rect) {
         use winit::keyboard::KeyCode as K;
         if code == K::Escape {
             l.pages.capturing = None;
-        } else if !matches!(code, K::ShiftLeft | K::ShiftRight | K::ControlLeft | K::ControlRight | K::AltLeft | K::AltRight | K::SuperLeft | K::SuperRight) {
+        } else {
+            // (a modifier key arrives here only let go of on its own: `Input::release_key`
+            // takes it then, its press alone being no binding, so it can be given an action
+            // like any other key - OMSI's file has a scan code for each of them)
             match omsi_input::keys::dik_code(code) {
                 Some(scan) => {
                     let m = l.ui.input.binding_modifiers() as i64;

@@ -50,6 +50,15 @@ const NAME_OF = Object.fromEntries(
 );
 const MODIFIER_CODES = new Set(['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight', 'OSLeft', 'OSRight']);
 
+/** The `keyboard.cfg` chord bit a modifier key stands for. A modifier key bound to something
+ * of its own is the key, not a modifier of itself, so its own bit is taken out of the chord
+ * it is bound with. The logo keys have no bit (OMSI's file names Shift, Ctrl and Alt only). */
+const MODIFIER_BIT = {
+  ShiftLeft: KEY_SHIFT, ShiftRight: KEY_SHIFT,
+  ControlLeft: KEY_CTRL, ControlRight: KEY_CTRL,
+  AltLeft: KEY_ALT, AltRight: KEY_ALT,
+};
+
 /** The caps of a key and its modifiers ("Shift", "D"); null for none. */
 function keyParts(scan, modifier) {
   if (!scan) return null;
@@ -316,6 +325,18 @@ function Keyboard() {
 function CaptureDialog({ label, action, current, list, skip, onKey, onClose }) {
   const [pending, setPending] = useState(null);
   useEffect(() => {
+    // The key the entry is given. One another entry has is said first.
+    const commit = (scan, chord) => {
+      const taken = list.filter((b, i) => i !== skip && b.scan_code === scan && chordOf(b.modifier) === chord && b.action !== action);
+      if (taken.length) setPending({ scan, chord, taken });
+      else onKey(scan, chord);
+    };
+    // A modifier key on its own may still be one half of a combination (Shift+X): only its
+    // release decides, and only when no other key went down in between (which `down` would
+    // have taken, so `tapped` is cleared). OMSI's keyboard.cfg gives every modifier key a
+    // scan code of its own - the right Ctrl's is 157 - and none of them could be bound while
+    // a modifier key was passed over.
+    let tapped = null;
     const down = (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -326,20 +347,38 @@ function CaptureDialog({ label, action, current, list, skip, onKey, onClose }) {
         else onClose();
         return;
       }
-      if (MODIFIER_CODES.has(e.code)) return;
+      if (MODIFIER_CODES.has(e.code)) {
+        tapped = e.code;
+        return;
+      }
+      tapped = null;
       const scan = SCAN_OF[e.code];
       if (!scan) {
         toast(t('{code} has no DirectInput scan code the game understands.', { code: e.code || e.key }), 'error');
         return;
       }
       const chord = (e.shiftKey ? KEY_SHIFT : 0) | (e.ctrlKey ? KEY_CTRL : 0) | (e.altKey ? KEY_ALT : 0);
-      const taken = list.filter((b, i) => i !== skip && b.scan_code === scan && chordOf(b.modifier) === chord && b.action !== action);
-      if (taken.length) setPending({ scan, chord, taken });
-      else onKey(scan, chord);
+      commit(scan, chord);
+    };
+    // Let go of on its own: the modifier key is the binding, and the modifiers still held are
+    // its chord (its own bit taken out, so that it is never a modifier of itself).
+    const up = (e) => {
+      if (!MODIFIER_CODES.has(e.code) || tapped !== e.code) return;
+      tapped = null;
+      const scan = SCAN_OF[e.code];
+      if (!scan) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const chord = (e.shiftKey ? KEY_SHIFT : 0) | (e.ctrlKey ? KEY_CTRL : 0) | (e.altKey ? KEY_ALT : 0);
+      commit(scan, chord & ~(MODIFIER_BIT[e.code] || 0));
     };
     // (before the dialog's own Escape, and before any button the key would press)
     window.addEventListener('keydown', down, true);
-    return () => window.removeEventListener('keydown', down, true);
+    window.addEventListener('keyup', up, true);
+    return () => {
+      window.removeEventListener('keydown', down, true);
+      window.removeEventListener('keyup', up, true);
+    };
   }, [list, skip, action, current, onKey, onClose]);
 
   return html`<${Dialog}

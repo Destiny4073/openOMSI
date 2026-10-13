@@ -64,7 +64,9 @@ pub struct Input {
     pub alt: bool,
     /// A key as it was pressed (for binding keys): winit's code name.
     pub raw_key: Option<winit::keyboard::KeyCode>,
-    /// Binding modifiers at key press, independent of later releases before redraw.
+    /// The chord of the key being bound, taken with it - at its press, or at its release
+    /// when the key is a modifier let go of on its own - and independent of later releases
+    /// before redraw.
     pub raw_chord: i32,
     pub double_click: bool,
     /// The wheel is a finger dragged over the screen: it scrolls, it never turns a slider or
@@ -73,12 +75,33 @@ pub struct Input {
 }
 
 impl Input {
-    pub fn capture_key(&mut self, code: winit::keyboard::KeyCode) {
-        // A modifier alone is not a binding. Do not let a later modifier event
-        // overwrite a letter already waiting for the controls page.
+    /// A key went down (for binding keys): winit's code, and `chord`, the modifiers held with
+    /// it, taken now - a release before the controls page draws must not take them away
+    /// (#1748). A modifier key on its own is no binding yet: it may be one half of a
+    /// combination, whose release decides (`release_key`); it must not overwrite a letter
+    /// already waiting for the controls page either.
+    pub fn capture_key(&mut self, code: winit::keyboard::KeyCode, chord: i32) {
         if Modifiers::bit(code).is_some() { return; }
         self.raw_key = Some(code);
-        self.raw_chord = omsi_content::input::chord(self.shift, self.ctrl, self.alt);
+        self.raw_chord = chord;
+    }
+
+    /// A key came back up, `chord` being the modifiers still held with it. A modifier let go
+    /// of on its own - with no other key pressed in between, which `capture_key` would have
+    /// taken - is a key of its own, the way the game reads one (#1477): it becomes the
+    /// binding, and the other modifiers held are its chord. Until this no modifier key could
+    /// be bound at all, and OMSI's `keyboard.cfg` gives every one of them a scan code of its
+    /// own, the right Ctrl's being 157.
+    pub fn release_key(&mut self, code: winit::keyboard::KeyCode, chord: i32) {
+        // (a key already waiting for the controls page is the binding: the modifier let go of
+        // was one half of its chord)
+        if self.raw_key.is_some() || Modifiers::bit(code).is_none() {
+            return;
+        }
+        self.raw_key = Some(code);
+        // (the key itself is the binding, not a modifier of itself: the same bit is what the
+        // game takes out of a modifier key's chord)
+        self.raw_chord = chord & !ompsi_input::keys::modifier_chord_bit(code);
     }
 
     pub fn binding_modifiers(&self) -> i32 {
@@ -146,6 +169,15 @@ impl Modifiers {
     pub fn command(&self) -> bool {
         let m = self.state();
         m.control_key() || m.super_key()
+    }
+
+    /// The modifiers held, as `keyboard.cfg` spells them: the chord bits of Shift, Ctrl and
+    /// Alt. This is what a key binding records - not the widgets' [`command`](Self::command),
+    /// which counts the logo key as a Ctrl (that is for copy and paste): OMSI's file has no
+    /// bit for the logo key, and holding it must not record a Ctrl nobody pressed.
+    pub fn chord(&self) -> i32 {
+        let m = self.state();
+        omsi_content::input::chord(m.shift_key(), m.control_key(), m.alt_key())
     }
 
     /// Into the widgets' input.
@@ -1464,7 +1496,7 @@ mod tests {
             m.told(held);
             m.apply(&mut input);
             // KeyboardInput presses A; ModifiersChanged releases the chord before redraw.
-            input.capture_key(K::KeyA);
+            input.capture_key(K::KeyA, m.chord());
             m.told(M::empty());
             m.apply(&mut input);
             assert_eq!(input.raw_key, Some(K::KeyA));
@@ -1480,18 +1512,120 @@ mod tests {
         let mut ui = Ui::new();
         for key in [K::ShiftRight, K::ControlLeft, K::AltRight] { m.key(key, true); }
         m.apply(&mut ui.input);
-        ui.input.capture_key(K::KeyA);
+        ui.input.capture_key(K::KeyA, m.chord());
         for key in [K::ShiftRight, K::ControlLeft, K::AltRight] { m.key(key, false); }
         m.apply(&mut ui.input);
-        ui.input.capture_key(K::ShiftLeft);
+        ui.input.capture_key(K::ShiftLeft, m.chord());
         assert_eq!(ui.input.raw_key, Some(K::KeyA));
         assert_eq!(ui.input.binding_modifiers(), omsi_content::input::KEY_SHIFT |
             omsi_content::input::KEY_CTRL | omsi_content::input::KEY_ALT);
         ui.discard_input();
         assert_eq!(ui.input.binding_modifiers(), 0);
-        ui.input.capture_key(K::KeyB);
+        ui.input.capture_key(K::KeyB, m.chord());
         assert_eq!(ui.input.raw_key, Some(K::KeyB));
         assert_eq!(ui.input.binding_modifiers(), 0);
+    }
+
+    /// A modifier key let go of on its own is the binding: OMSI's `keyboard.cfg` gives every
+    /// one of them a scan code of their own - the right Ctrl's is 157 - and none of them
+    /// could be bound at all while a modifier key was passed over.
+    #[test]
+    fn a_modifier_key_let_go_of_on_its_own_is_the_binding() {
+        use winit::keyboard::KeyCode as K;
+        for (code, scan) in [
+            (K::ControlRight, 157),
+            (K::ControlLeft, 29),
+            (K::ShiftRight, 54),
+            (K::ShiftLeft, 42),
+            (K::AltRight, 184),
+            (K::AltLeft, 56),
+            (K::SuperRight, 220),
+            (K::SuperLeft, 219),
+        ] {
+            let mut m = Modifiers::default();
+            let mut input = Input::default();
+            m.key(code, true);
+            m.apply(&mut input);
+            // (its press is no binding yet: it may be one half of a combination)
+            input.capture_key(code, m.chord());
+            assert_eq!(input.raw_key, None, "{code:?}");
+            // let go of with no other key in between: it is the key
+            m.key(code, false);
+            m.apply(&mut input);
+            input.release_key(code, m.chord());
+            assert_eq!(input.raw_key, Some(code), "{code:?}");
+            assert_eq!(input.binding_modifiers(), 0, "{code:?}");
+            assert_eq!(ompsi_input::keys::dik_code(code), Some(scan), "{code:?}");
+        }
+    }
+
+    /// A modifier held with a letter is that letter's chord, never the binding: letting it go
+    /// of afterwards leaves the letter waiting, as it is (Shift+A is Shift+A).
+    #[test]
+    fn a_modifier_held_with_a_letter_is_not_the_binding() {
+        use winit::keyboard::KeyCode as K;
+        let mut m = Modifiers::default();
+        let mut input = Input::default();
+        // Shift down, A down, Shift up again
+        m.key(K::ShiftLeft, true);
+        m.apply(&mut input);
+        input.capture_key(K::ShiftLeft, m.chord());
+        input.capture_key(K::KeyA, m.chord());
+        assert_eq!(input.raw_key, Some(K::KeyA));
+        assert_eq!(input.binding_modifiers(), omsi_content::input::KEY_SHIFT);
+        m.key(K::ShiftLeft, false);
+        m.apply(&mut input);
+        input.release_key(K::ShiftLeft, m.chord());
+        assert_eq!(input.raw_key, Some(K::KeyA));
+        assert_eq!(input.binding_modifiers(), omsi_content::input::KEY_SHIFT);
+    }
+
+    /// The modifiers still held when a modifier key is let go of are its chord - and the key's
+    /// own bit is taken out of it, the way the game takes it out, so the key is never a
+    /// modifier of itself.
+    #[test]
+    fn a_modifier_let_go_of_keeps_the_others_held_as_its_chord() {
+        use winit::keyboard::KeyCode as K;
+        // left Shift held, the right Ctrl tapped: Shift+ControlRight
+        let mut m = Modifiers::default();
+        let mut input = Input::default();
+        m.key(K::ShiftLeft, true);
+        m.key(K::ControlRight, true);
+        m.apply(&mut input);
+        input.capture_key(K::ControlRight, m.chord());
+        assert_eq!(input.raw_key, None);
+        m.key(K::ControlRight, false);
+        m.apply(&mut input);
+        input.release_key(K::ControlRight, m.chord());
+        assert_eq!(input.raw_key, Some(K::ControlRight));
+        assert_eq!(input.binding_modifiers(), omsi_content::input::KEY_SHIFT);
+        // both Ctrls held, the right one let go of: the right Ctrl alone, not Ctrl+itself
+        let mut m = Modifiers::default();
+        let mut input = Input::default();
+        m.key(K::ControlLeft, true);
+        m.key(K::ControlRight, true);
+        m.apply(&mut input);
+        input.capture_key(K::ControlRight, m.chord());
+        m.key(K::ControlRight, false);
+        m.apply(&mut input);
+        input.release_key(K::ControlRight, m.chord());
+        assert_eq!(input.raw_key, Some(K::ControlRight));
+        assert_eq!(input.binding_modifiers(), 0);
+    }
+
+    /// The logo key is no chord of the game's: holding it while a key is bound must not record
+    /// a Ctrl nobody pressed. It counts as a Ctrl only for the widgets' copy and paste.
+    #[test]
+    fn the_logo_key_is_no_chord_of_a_binding() {
+        use winit::keyboard::{KeyCode as K, ModifiersState as M};
+        let mut m = Modifiers::default();
+        let mut input = Input::default();
+        m.told(M::SUPER);
+        m.apply(&mut input);
+        assert!(input.ctrl, "the widgets take the logo key as their command");
+        input.capture_key(K::KeyA, m.chord());
+        assert_eq!(input.raw_key, Some(K::KeyA));
+        assert_eq!(input.binding_modifiers(), 0);
     }
 
     /// What was clicked and typed while the launcher drew nothing (a game ran) is gone:

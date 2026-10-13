@@ -37,6 +37,9 @@ impl App {
         self.menus.menu_kbd = true;
         if self.menus.key_capture.is_some() {
             match code {
+                // (a modifier alone is no binding yet: it may be one half of a combination,
+                // Shift+X. Its release decides - see `menu_key_release` - so its press is
+                // passed over, as it always was)
                 KeyCode::ShiftLeft | KeyCode::ShiftRight | KeyCode::ControlLeft | KeyCode::ControlRight | KeyCode::AltLeft | KeyCode::AltRight => {}
                 KeyCode::Escape => self.cancel_key_capture(),
                 KeyCode::Delete | KeyCode::Backspace => self.apply_key_capture(None, 0),
@@ -73,6 +76,26 @@ impl App {
             KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => self.menu_choose(event_loop, sel),
             _ => {}
         }
+    }
+
+    /// A key let go of while the key list waits for one. A modifier that comes back up with
+    /// nothing bound in between - a letter's press would have taken the binding, and a
+    /// modifier's own press is passed over above - is a key of its own here, the way the game
+    /// reads one (#1477): its own scan code, with the other modifiers still held for the
+    /// chord, and its own bit taken out of it, so that the key is never a modifier of itself.
+    /// OMSI's file gives the right Ctrl a scan code of its own (157), and the list could not
+    /// be given one at all while every modifier key was passed over.
+    pub(crate) fn menu_key_release(&mut self, code: KeyCode) {
+        if self.menus.key_capture.is_none() || !crate::input_script::is_modifier(code) {
+            return;
+        }
+        let Some(scan) = crate::keys::dik_code(code) else { return };
+        let chord = omsi_content::input::chord(
+            self.input.keys.contains(&KeyCode::ShiftLeft) || self.input.keys.contains(&KeyCode::ShiftRight),
+            self.input.keys.contains(&KeyCode::ControlLeft) || self.input.keys.contains(&KeyCode::ControlRight),
+            self.input.keys.contains(&KeyCode::AltLeft) || self.input.keys.contains(&KeyCode::AltRight),
+        ) & !crate::keys::modifier_chord_bit(code);
+        self.apply_key_capture(Some(scan), chord);
     }
 
     /// The open drop-down's scroll bar held with the mouse at height `y`: the first entry

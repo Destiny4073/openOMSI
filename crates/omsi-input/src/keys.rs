@@ -119,6 +119,23 @@ pub fn dik_code(key: KeyCode) -> Option<i32> {
     })
 }
 
+/// The `keyboard.cfg` chord bit a modifier key stands for: `KEY_SHIFT`, `KEY_CTRL` or
+/// `KEY_ALT`. 0 for a key that is no modifier, and for the logo keys, which the file has no
+/// bit for (it names Shift, Ctrl and Alt only).
+///
+/// A modifier key bound to an action of its own is the key, not its own modifier: the bit is
+/// what the *other* modifiers held come to, so a key's own bit is taken out of its chord
+/// (the game reads a modifier key the same way, #1477).
+pub fn modifier_chord_bit(key: KeyCode) -> i32 {
+    use KeyCode::*;
+    match key {
+        ShiftLeft | ShiftRight => omsi_content::input::KEY_SHIFT,
+        ControlLeft | ControlRight => omsi_content::input::KEY_CTRL,
+        AltLeft | AltRight => omsi_content::input::KEY_ALT,
+        _ => 0,
+    }
+}
+
 /// A readable name for a DIK scan code ("W", "Num8", "Up", "F5"), from the same table.
 pub fn scan_name(scan: i32) -> Option<String> {
     use KeyCode::*;
@@ -148,6 +165,37 @@ mod scan_name_tests {
         assert_eq!(super::scan_name(72).as_deref(), Some("Num8"));
         assert_eq!(super::scan_name(200).as_deref(), Some("Up"));
         assert_eq!(super::scan_name(52).as_deref(), Some("."));
+    }
+
+    /// The chord bit of every modifier key, both sides, and none for the keys that are no
+    /// modifier - the logo keys among them, which `keyboard.cfg` has no bit for.
+    #[test]
+    fn a_modifier_key_has_a_chord_bit() {
+        use omsi_content::input::{KEY_ALT, KEY_CTRL, KEY_SHIFT};
+        use winit::keyboard::KeyCode::*;
+        for k in [ShiftLeft, ShiftRight] {
+            assert_eq!(super::modifier_chord_bit(k), KEY_SHIFT, "{k:?}");
+        }
+        for k in [ControlLeft, ControlRight] {
+            assert_eq!(super::modifier_chord_bit(k), KEY_CTRL, "{k:?}");
+        }
+        for k in [AltLeft, AltRight] {
+            assert_eq!(super::modifier_chord_bit(k), KEY_ALT, "{k:?}");
+        }
+        for k in [SuperLeft, SuperRight, KeyA, Digit1, Escape, F5] {
+            assert_eq!(super::modifier_chord_bit(k), 0, "{k:?}");
+        }
+    }
+
+    /// Every modifier key has a scan code of its own: OMSI's right Ctrl (157) among them,
+    /// which no side of the binding pages could be given while a modifier was ignored.
+    #[test]
+    fn every_modifier_key_has_a_scan_code() {
+        use winit::keyboard::KeyCode::*;
+        for k in [ShiftLeft, ShiftRight, ControlLeft, ControlRight, AltLeft, AltRight, SuperLeft, SuperRight] {
+            assert!(super::dik_code(k).is_some(), "{k:?}");
+        }
+        assert_eq!(super::dik_code(ControlRight), Some(157));
     }
 }
 
